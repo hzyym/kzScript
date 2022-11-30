@@ -1,0 +1,8 @@
+type r struct {
+    z:int
+    c:string
+    v:string
+}
+type z fun(int,string,up:string,[]int)
+type zz fun(int) -> string
+type c int

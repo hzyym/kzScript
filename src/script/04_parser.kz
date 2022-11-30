@@ -1,0 +1,16 @@
+let c = fun (a:int,b:string) int {
+    if a == b {
+       let c:int = 10;
+    } else {
+       let b:string = 20
+    }
+    let c:int =50
+    let aa:string = 30
+}
+let c = fun (a:int,b:string) -> int {
+    if a == b {
+       let c:int = 10;
+    } else {
+       let b:string = 20
+    }
+}

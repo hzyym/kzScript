@@ -1,0 +1,13 @@
+if a == b {
+   let c:int = 10;
+} else {
+
+
+   let b:string = 20
+
+   let ty:string = 20
+}
+
+if c == d {
+   let r:int = 20
+}
