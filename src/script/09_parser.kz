@@ -1,0 +1,12 @@
+for let i:int = 0;i < 30;i++ {
+    let a:int = cc
+    continue
+}
+for let i:int = 0;i < 30;i++ {
+    let a:int = cc
+    break
+}
+for let i:int = 0;i < 30;i++ {
+    let a:int = cc
+    continue
+}

@@ -1,8 +1,8 @@
 use crate::ast::node::{Expression, Statement};
 use crate::parser::token::Token;
 
-#[derive(Debug)]
-pub struct FunStatement {
+#[derive(Debug,PartialEq)]
+pub struct FunExpression {
     pub name:Option<Expression>,
     pub ret_type:Option<Token>,
     pub param_number:usize,
@@ -10,8 +10,8 @@ pub struct FunStatement {
     pub body:Vec<Statement>
 }
 
-impl FunStatement {
-    pub fn new() -> FunStatement{
+impl FunExpression {
+    pub fn new() -> FunExpression{
         Self {
             name:None,
             ret_type:None,

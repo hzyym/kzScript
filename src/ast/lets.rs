@@ -1,8 +1,8 @@
-use std::cell::RefCell;
-use crate::ast::node::{Expression, Statement};
+
+use crate::ast::node::{Expression};
 use crate::parser::token::Token;
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct LetStatement {
      pub token_type:Token,
      pub ident:String,

@@ -1,6 +1,6 @@
 use crate::ast::node::{Expression, Statement};
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct IfStatement {
     pub condition:Expression,
     pub consequence:Vec<Statement>,

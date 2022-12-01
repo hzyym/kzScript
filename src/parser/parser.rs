@@ -1,16 +1,13 @@
-use std::borrow::BorrowMut;
-use std::collections::BTreeMap;
-use std::ops::Mul;
-use crate::ast::fun::FunStatement;
+use crate::ast::for_::ForStatement;
+use crate::ast::fun::{FunExpression};
 use crate::ast::ifs::IfStatement;
 use crate::ast::infix::InfixExpression;
 use crate::ast::lets::LetStatement;
 use crate::parser::file::PaserFile;
-use crate::parser::{lexer, token};
 use crate::parser::lexer::Lexer;
 use crate::parser::token::{Operation, Token};
 use crate::ast::node::{Expression, Statement};
-use crate::parser::error::KzError;
+use crate::parser::error::{KzErr, KzError};
 
 
 
@@ -18,6 +15,7 @@ pub struct Parser {
     lex:Lexer,
     current_tok:Token,
     peek_tok:Token,
+    notes:bool
 }
 
 impl Parser {
@@ -25,7 +23,8 @@ impl Parser {
        let mut p =  Self {
             lex:l,
             current_tok:Token::Err("parsing not started".to_string()),
-            peek_tok:Token::Err("parsing not started".to_string())
+            peek_tok:Token::Err("parsing not started".to_string()),
+            notes:false,
         };
        p.next_token();
        p.next_token();
@@ -53,41 +52,56 @@ impl Parser {
     }
     fn next_token(&mut self) {
         self.current_tok = self.peek_tok.clone();
-        self.peek_tok = self.lex.next()
+        self.peek_tok = self.lex.next();
+        self.notes()
     }
-
+    fn notes(&mut self) {
+        if self.notes {
+            return;
+        }
+        self.notes = true;
+        while self.current_token_is(Token::NotesBlock) || self.current_token_is(Token::Notes) {
+            if self.current_token_is(Token::Eof) {
+                break
+            }
+            match self.current_tok {
+                Token::Notes => self.dump_notes_token(Token::N),
+                Token::NotesBlock => self.dump_notes_token(Token::NotesBlockEnd),
+                _ => {}
+            }
+        }
+        self.notes = false;
+    }
     pub fn program(&mut self) -> Result<Vec<Statement>,KzError> {
         let mut v = Vec::new();
         while !self.peek_token_is(Token::Eof) && !self.peek_token_is(Token::RightCurlyBracket) {
             match self.current_tok {
-                Token::Let => {
-                    v.push(self.let_statement()?)
-                },
-                Token::If => {
-                    v.push(self.if_statement()?)
-                }
-                Token::Fun =>{
-                   v.push(Statement::Fun(self.fun_statement()?))
-                },
-                Token::Type => {
-                    v.push(self.type_statement()?)
-                },
-                Token::Ident(_) => {
-                    v.push(self.ident_statement()?)
-                },
-                Token::N => { self.next_token() },
-                Token::RightCurlyBracket => { return  Ok(v)}
+                Token::N => self.next_token(),
+                Token::RightCurlyBracket => { return  Ok(v)},
                 _ => {
-                    return Err(self.error(format!("program unknown type error {:?}",&self.current_tok).as_str()))
+                    v.push(self.parser_statement()?)
                 }
             };
-
             if self.current_token_is(Token::Sem) {
                 self.next_token();
             }
         }
-
         Ok(v)
+    }
+    fn parser_statement(&mut self) -> Result<Statement,KzError> {
+        match self.current_tok {
+            Token::Let => self.let_statement(),
+            Token::If => self.if_statement(),
+            Token::Fun => Ok(Statement::Fun(self.fun_expression()?)),
+            Token::Type => self.type_statement(),
+            Token::Ident(_) => self.ident_statement(),
+            Token::SelfSub | Token::SelfAdd => self.prefix_statement(),
+            Token::For => self.for_statement(),
+            Token::Return | Token::Break | Token::Continue => self.rbc_statement(),
+            _ => {
+                return Err(self.error(KzErr::Program(self.current_tok.clone())))
+            }
+        }
     }
     fn ident(&self) -> Option<String>{
        match &self.peek_tok {
@@ -106,27 +120,19 @@ impl Parser {
                     self.array_token();
                 }
                 if !Token::let_type(&self.current_tok) {
-                    return Err(self.error(format!("'{}' type is not legal",let_stem.ident).as_str()))
+                    return Err(self.error(KzErr::Type(self.current_tok.clone())))
                 }
                 let_stem.token_type = self.current_tok.clone();
             }
             if !self.expect_peek_token(Token::Assign) {
-                return Err(self.error("missing '=' symbol"))
+                return Err(self.error(KzErr::Expected(Token::Assign)))
             }
-            if let_stem.token_type == Token::Unknown {
-                if self.expect_peek_token(Token::Fun) {
-                    return Ok(Statement::LetFun(let_stem.ident,self.fun_statement()?))
-                }
-                return Err(self.error("Unable to parse"))
-            } else {
-                self.next_token();
-                let_stem.exp = Some(self.expression(Operation::Lowest)?);
-            }
+            self.next_token();
+            let_stem.exp = Some(self.expression(Operation::Lowest)?);
             self.dump_boundary();
             return Ok(Statement::Let(let_stem));
-            // return Err(self.error(format!("let {} missing ':' ",&let_stem.ident).as_str()))
         }
-        Err(self.error("let ? <- missing name!"))
+        Err(self.error(KzErr::ExpectedName))
     }
     fn list_value_expression(&mut self) -> Result<Expression,KzError>{
         self.expect_curr_token(Token::LeftSquareBra); //peek [
@@ -144,17 +150,21 @@ impl Parser {
             Token::Basics(val,tok) => self.basics(val,tok.as_ref())?,
             Token::Ident(val) => Expression::Ident(val.clone()),
             Token::LeftSquareBra => self.list_value_expression()?,
+            Token::Fun => {
+               let exp = self.fun_expression()?;
+               Expression::Fun(Box::new(exp))
+            },
             _ => Expression::Unknown
         };
         if left == Expression::Unknown {
-            return Err(self.error("expression Unknown"))
+            return Err( self.error(KzErr::UnExpSymbol(self.current_tok.clone())))
         }
         while op < self.peek_operation() && !self.peek_stem_end() {
 
              left = match &self.peek_tok {
                  Token::Add | Token::Sub |
                  Token::Div | Token::Mul |
-                 Token::LT | Token::GT | Token::LT_Equ | Token::GT_Equ |
+                 Token::LT | Token::GT | Token::LTEqu | Token::GTEqu |
                  Token::BangEqu | Token::Equ
                  => {
                      self.next_token();
@@ -162,16 +172,17 @@ impl Parser {
                  },
                  Token::LeftBracket => {
                      self.next_token();
-                     let exp = self.call_expression(left)?;
-                     self.expect_curr_token(Token::RightBracket);
-
-                     exp
+                     self.call_expression(left)?
                  },
                  Token::LeftSquareBra => {
                      self.next_token();
                      self.index_expression(left)?
                  },
-                 _ => {return Err(self.error(format!("unable to parse symbol '{:?}'",&self.peek_tok).as_str()))}
+                 Token::SelfAdd | Token::SelfSub => {
+                     self.next_token();
+                     self.self_operation_expression(left,false)?
+                 },
+                 _ => {return Err(self.error(KzErr::UnOpSymbol(self.peek_tok.clone())))}
              };
         }
         Ok(left)
@@ -179,9 +190,9 @@ impl Parser {
     fn infix_expression(&mut self,left:Expression) -> Result<Expression,KzError> {
         let mut exp = InfixExpression::new(left);
         exp.op_symbol = self.current_tok.clone();
+        let op = self.curr_operation();
         self.next_token();
-        exp.right = self.expression(self.curr_operation())?;
-
+        exp.right = self.expression(op)?;
         Ok(Expression::Infix(Box::new(exp)))
     }
     fn basics(&self, val:&str, tok: &Token) -> Result<Expression,KzError>{
@@ -197,9 +208,10 @@ impl Parser {
         if *tok == Token::String {
             return Ok(Expression::String(val.to_string()))
         }
-        return Err(self.error(format!("'{}' Is not a legal value",val).as_str()))
+
+        Err(self.error(KzErr::Value(val.to_string())))
     }
-    fn error(&self,err:&str) -> KzError {
+    fn error(&self, err:KzErr) -> KzError {
         KzError::new(self.lex.file_path(),self.lex.line(),self.lex.line_index(),err)
     }
 
@@ -211,9 +223,9 @@ impl Parser {
     }
     fn operation(&self, tok: &Token) -> Operation {
         match tok {
-            Token::Add | Token::Sub => Operation::AddAndSub,
+            Token::Add | Token::Sub | Token::SelfSub | Token::SelfAdd => Operation::AddAndSub,
             Token::Div | Token::Mul => Operation::MulAndDiv,
-            Token::LT | Token::GT  | Token::LT_Equ | Token::GT_Equ => Operation::LtAndGt,
+            Token::LT | Token::GT  | Token::LTEqu | Token::GTEqu => Operation::LtAndGt,
             Token::Equ | Token::BangEqu => Operation::EquAls,
             Token::LeftBracket => Operation::Call,
             Token::LeftSquareBra => Operation::Index,
@@ -239,7 +251,7 @@ impl Parser {
         let exp = self.expression(Operation::Lowest)?;
         let mut if_stem = IfStatement::new(exp);
         if !self.expect_peek_token(Token::LeftCurlyBracket) {
-            return Err(self.error("expected symbol '{' does not exist"))
+            return Err(self.error(KzErr::Expected(Token::LeftCurlyBracket)))
         }
         self.next_token();
 
@@ -257,42 +269,42 @@ impl Parser {
         Ok(Statement::IF(if_stem))
     }
     //fn
-    fn fun_head_statement(&mut self,need_param_name:bool) -> Result<FunStatement,KzError> {
+    fn fun_head_expression(&mut self,need_param_name:bool) -> Result<FunExpression,KzError> {
         let name = match &self.peek_tok {
             Token::Ident(name) => {
                 Some(name.clone())
             } ,
             _ => { None }
         };
-        let mut fn_stem = FunStatement::new();
+        let mut fn_exp = FunExpression::new();
         self.next_token();
         if name != None {
             if !self.expect_peek_token(Token::LeftBracket) {
-                return Err(self.error("expected symbol '(' does not exist"))
+                return Err(self.error(KzErr::Expected(Token::LeftBracket)))
             }
-            fn_stem.name = Some(Expression::Ident(name.unwrap()));
+            fn_exp.name = Some(Expression::Ident(name.unwrap()));
         }
         self.next_token();
-        fn_stem.param_exp = Some(self.param_expression(Token::RightBracket,false,need_param_name)?);
-        fn_stem.param_number = fn_stem.param_exp.as_ref().unwrap().len();
+        fn_exp.param_exp = Some(self.param_expression(Token::RightBracket,false,need_param_name)?);
+        fn_exp.param_number = fn_exp.param_exp.as_ref().unwrap().len();
         self.expect_peek_token(Token::Arrow);
         self.next_token();
         if Token::let_type(&self.current_tok) {
-            fn_stem.ret_type = Some(self.current_tok.clone());
+            fn_exp.ret_type = Some(self.current_tok.clone());
         }
-        Ok(fn_stem)
+        Ok(fn_exp)
     }
-    //fun statement
-    fn fun_statement(&mut self) -> Result<FunStatement,KzError> {
-        let mut fn_stem = self.fun_head_statement(true)?;
+    //fun expression
+    fn fun_expression(&mut self) -> Result<FunExpression,KzError> {
+        let mut fn_exp = self.fun_head_expression(true)?;
         if !self.expect_peek_token(Token::LeftCurlyBracket) {
-            return Err(self.error("expected symbol '{' does not exist"))
+            return Err(self.error(KzErr::Expected(Token::LeftCurlyBracket)))
         }
         self.next_token();
-        fn_stem.body = self.program()?;
+        fn_exp.body = self.program()?;
 
         self.dump_token(Token::RightCurlyBracket);
-        Ok(fn_stem)
+        Ok(fn_exp)
     }
 
     fn param_expression(&mut self, tok: Token,n:bool,need_name:bool) -> Result<Vec<Expression>,KzError>{
@@ -308,14 +320,14 @@ impl Parser {
             }
             if name != None {
                 if !self.expect_peek_token(Token::Colon)  {
-                    return Err(self.error("expected symbol ':' does not exist"))
+                    return Err( self.error(KzErr::Expected(Token::Colon)))
                 }
                 self.next_token();
                 if self.current_token_is(Token::LeftSquareBra) {
                     self.array_token();
                 }
                 if !Token::let_type(&self.current_tok) {
-                    return Err(self.error(format!("'{:?}' type is not legal",&self.current_tok).as_str()))
+                    return Err(self.error(KzErr::Type(self.current_tok.clone())))
                 }
                 v.push(Expression::Param(name.unwrap(),self.current_tok.clone()));
 
@@ -328,13 +340,13 @@ impl Parser {
                         self.array_token();
                     }
                     if !Token::let_type(&self.current_tok) {
-                        return Err(self.error(format!("'{:?}' type is not legal",&self.current_tok).as_str()))
+                        return Err( self.error(KzErr::Type(self.current_tok.clone())))
                     }
                     v.push(Expression::Param("".to_string(),self.current_tok.clone()));
                     self.expect_peek_token(Token::Comma);
                     self.next_token()
                 } else {
-                    return Err(self.error("Parameter name is not a valid value"))
+                    return Err(self.error(KzErr::ParamName))
                 }
             }
 
@@ -358,12 +370,12 @@ impl Parser {
                 return Ok(stem)
             }
         }
-        Err(self.error("type is missing name"))
+        Err( self.error(KzErr::ExpectedName))
     }
     fn struct_expression(&mut self) -> Result<Expression,KzError> {
         //struct 开始
         if !self.expect_peek_token(Token::LeftCurlyBracket) {
-            return Err(self.error("expected symbol '{' does not exist"))
+            return Err( self.error(KzErr::UnExpSymbol(Token::LeftCurlyBracket)))
         }
         self.dump_n();//清除换行
         self.next_token();
@@ -374,7 +386,7 @@ impl Parser {
     }
     fn type_fn_expression(&mut self) -> Result<Expression,KzError> {
         //fun
-        let f = self.fun_head_statement(false)?;
+        let f = self.fun_head_expression(false)?;
         if !self.current_token_is(Token::N) {
             self.next_token();
         }
@@ -382,7 +394,7 @@ impl Parser {
         if f.param_exp != None {
             p = Some(Box::new(f.param_exp.unwrap()))
         }
-        Ok(Expression::Fun(p,f.ret_type))
+        Ok(Expression::FunType(p,f.ret_type))
     }
     fn dump_n(&mut self) {
         while self.expect_peek_token(Token::N) {
@@ -397,10 +409,21 @@ impl Parser {
             self.next_token();
         }
     }
+    fn dump_notes_token(&mut self,tok:Token) {
+        loop {
+            if self.current_token_is(tok.clone()) || self.current_token_is(Token::Eof) {
+                self.next_token();
+                break
+            }
+            self.next_token();
+        }
+    }
     fn dump_boundary(&mut self){
         loop {
             if self.current_token_is(Token::N) || self.current_token_is(Token::Sem)
-                || self.current_token_is(Token::Eof) {
+                || self.current_token_is(Token::Eof) || self.current_token_is(Token::LeftCurlyBracket)
+                || self.current_token_is(Token::RightCurlyBracket)
+            {
                  break
             }
             self.next_token();
@@ -433,14 +456,16 @@ impl Parser {
         Ok(Statement::Invoke(exp))
     }
     fn call_expression(&mut self,left:Expression) -> Result<Expression,KzError> {
-        self.next_token();
+        self.next_token();//(
         let mut list:Vec<Box<Expression>> = Vec::new();
         while !self.current_token_is(Token::RightBracket) && !self.curr_stem_end() {
             let exp = self.expression(Operation::Lowest)?;
             list.push(Box::new(exp));
-            self.expect_peek_token(Token::Comma);
-            self.next_token();
+            if self.expect_peek_token(Token::Comma) || self.expect_peek_token(Token::RightBracket) {
+                self.next_token();
+            }
         }
+        self.expect_curr_token(Token::RightBracket);
         Ok(Expression::Call(Box::new(left),list))
     }
 
@@ -449,6 +474,56 @@ impl Parser {
         let exp = self.expression(Operation::Lowest)?;
         self.dump_token(Token::RightSquareBra);
         Ok(Expression::Index(Box::new(left),Box::new(exp)))
+    }
+
+    fn self_operation_expression(&mut self,name:Expression,left:bool) -> Result<Expression,KzError> {
+        //-- ++
+        let tok = self.current_tok.clone();
+        Ok(Expression::SelfOp(Box::new(name),tok,left))
+    }
+
+    fn prefix_statement(&mut self) -> Result<Statement,KzError> {
+        let tok = self.current_tok.clone();
+        self.next_token();
+        let exp = self.expression(Operation::Lowest)?;
+        self.next_token();
+        Ok(Statement::Invoke(Expression::SelfOp(Box::new(exp),tok,true)))
+    }
+
+    fn for_statement(&mut self) -> Result<Statement,KzError> {
+        //for
+        self.next_token();
+        let start_condition = self.parser_statement()?;
+        if !self.expect_curr_token(Token::Sem) {
+            return Err(self.error(KzErr::UnExpSymbol(Token::Sem)))
+        }
+        let condition = self.expression(Operation::Lowest)?;
+        self.next_token();
+        if !self.expect_curr_token(Token::Sem) {
+            return Err(self.error(KzErr::UnExpSymbol(Token::Sem)))
+        }
+        let self_operation = self.parser_statement()?;
+        let mut for_stem = ForStatement::new(start_condition,condition,self_operation);
+        if !self.expect_curr_token(Token::LeftCurlyBracket) {
+            return Err(self.error(KzErr::UnExpSymbol(Token::LeftCurlyBracket)))
+        }
+        for_stem.consequence = self.program()?;
+        self.dump_token(Token::RightCurlyBracket);
+        Ok(Statement::For(for_stem))
+    }
+
+    //return break continue
+    fn rbc_statement(&mut self) -> Result<Statement,KzError> {
+        let tok = self.current_tok.clone();
+        self.next_token();
+        let stem = match tok {
+            Token::Return => Statement::Return(self.expression(Operation::Lowest)?),
+            Token::Break => Statement::Break,
+            Token::Continue => Statement::Continue,
+            _ => { return Err(self.error(KzErr::UnExpSymbol(tok)))}
+        };
+        self.dump_boundary();
+        Ok(stem)
     }
 }
 
@@ -479,6 +554,14 @@ fn test_parser_07(){
 #[test]
 fn test_parser_08(){
     print_parser("./src/script/08_parser.kz");
+}
+#[test]
+fn test_parser_09(){
+    print_parser("./src/script/09_parser.kz");
+}
+#[test]
+fn test_parser_010(){
+    print_parser("./src/script/10_parser.kz");
 }
 fn print_parser(s:&str){
     let f = PaserFile::new(s);

@@ -1,2 +1,17 @@
-add(sub(sub(sub(sub(sub())))))
+a++
+++a
+a[0]
+a[2]
+return add(add(add(add(add(add(add(add(add()))))))))
+a[2]
+continue
+break
+a[3]
 
+add(3,5,6)
+
+return fun(x:int) -> int {
+   let a:string = "test"
+   return a
+}
+let ret:int = 1

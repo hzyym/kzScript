@@ -16,10 +16,18 @@ if a < b {
 } else {
    let arr:[]int = [1,2,3,4,5,6,7,8,9]
    let z:int = arr[0]
+
+   for let i:int = 0;i < 30;i++ {
+       let a:int = cc
+   }
 }
 
 let f = fun(b:string,c:myF) string {
     let fn:string = "fn test"
+
+    for let i:int = 0;i < 30;i++ {
+        let a:int = cc
+    }
 }
 f("test",op(10))
 
